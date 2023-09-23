@@ -12,10 +12,41 @@ import (
 
 	"github.com/tom-uchida/go-grpc/pb"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_auth "github.com/grpc-ecosystem/go-grpc-middleware/auth"
 )
 
 type server struct {
 	pb.UnimplementedFileServiceServer
+}
+
+func myLogging() grpc.UnaryServerInterceptor {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		log.Printf("Request data: %+v", req)
+
+		resp, err := handler(ctx, req)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("Response data: %+v", resp)
+
+		return resp, nil
+	}
+}
+
+func authorize(ctx context.Context) (context.Context, error) {
+	token, err := grpc_auth.AuthFromMD(ctx, "Bearer")
+	if err != nil {
+		return nil, err
+	}
+
+	if token != "test-token" {
+		return nil, status.Error(codes.Unauthenticated, "token is invalid")
+	}
+	return ctx, nil
 }
 
 func main() {
@@ -24,7 +55,10 @@ func main() {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	s := grpc.NewServer()
+	s := grpc.NewServer(grpc.UnaryInterceptor(
+		grpc_middleware.ChainUnaryServer(
+			myLogging(),
+			grpc_auth.UnaryServerInterceptor(authorize))))
 	pb.RegisterFileServiceServer(s, &server{})
 
 	fmt.Println("server is running...")
@@ -62,6 +96,10 @@ func (*server) Download(req *pb.DownloadRequest, stream pb.FileService_DownloadS
 	filename := req.GetFilename()
 	path := "/Users/uchidatomomasa/GitHub/Go/go-grpc/storage/" + filename
 
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return status.Error(codes.NotFound, "file was not found")
+	}
+
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -83,7 +121,7 @@ func (*server) Download(req *pb.DownloadRequest, stream pb.FileService_DownloadS
 		if sendErr != nil {
 			return sendErr
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 
 	return nil
